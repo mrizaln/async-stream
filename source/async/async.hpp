@@ -4,13 +4,13 @@
 
 #include <asio.hpp>
 #include <asio/experimental/awaitable_operators.hpp>
+#include <tl/expected.hpp>
 
 #include <concepts>
-#include <tl/expected.hpp>
+#include <utility>
 
 namespace async
 {
-    // async
     using DefaultToken = AsExpected<asio::use_awaitable_t<>>;
     using TcpAcceptor  = DefaultToken::as_default_on_t<asio::ip::tcp::acceptor>;
     using TcpSocket    = DefaultToken::as_default_on_t<asio::ip::tcp::socket>;
@@ -25,30 +25,30 @@ namespace async
     template <typename T>
     using Awaitable = asio::awaitable<T>;
 
-    using asio::bind_cancellation_slot;
-    using asio::co_spawn;
     using asio::ip::tcp;
 
-    template <typename To, typename From>
-        requires std::default_initializable<To>
-    std::tuple<Error, To> transformIfNoError(std::tuple<Error, From>&& from, std::invocable<From&&> auto&& transform)
+    template <typename Exec, typename Awaited>
+    auto spawn(Exec&& ex, Awaited&& func)
     {
-        if (std::get<0>(from)) {
-            return std::make_tuple(std::get<0>(from), To{});
-        }
-        return std::make_tuple(Error{}, std::invoke(transform, std::move(std::get<1>(from))));
+        return co_spawn(std::forward<Exec>(ex), std::forward<Awaited>(func), asio::detached);
     }
 
-    template <typename To, typename From>
-        requires std::constructible_from<To, From> && std::default_initializable<To>
-    std::tuple<Error, To> transformIfNoError(std::tuple<Error, From>&& from)
+    template <typename Exec, typename Awaited, typename Completion>
+    auto spawn(Exec&& ex, Awaited&& func, Completion&& completion)
     {
-        auto [e, v] = std::move(from);
-        if (std::get<0>(from)) {
-            return std::make_tuple<Error, To>(std::move(e), {});
-        }
-        return std::make_tuple<Error, To>({}, { std::move(v) });
+        return co_spawn(
+            std::forward<Exec>(ex),    //
+            std::forward<Awaited>(func),
+            std::forward<Completion>(completion)
+        );
     }
 
+    template <typename E>
+    auto unexpected(E&& e)
+    {
+        return tl::make_unexpected(std::forward<E>(e));
+    }
+
+    namespace this_coro = asio::this_coro;
     namespace operators = asio::experimental::awaitable_operators;
 }
