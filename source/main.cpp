@@ -5,25 +5,27 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <csignal>
 #include <exception>
-#include <optional>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <tuple>
 
+#define MAX_MESSAGE_SIZE 1024
+
 std::atomic<bool> g_interrupt{ false };
 
-std::optional<long> toLong(std::string_view str)
+std::string& removeNewLine(std::string& str)
 {
-    try {
-        return std::stol(std::string{ str });
-    } catch (const std::exception&) {
-        return {};
+    if (!str.empty() && str.back() == '\n') {
+        str.pop_back();
     }
+    if (!str.empty() && str.back() == '\r') {
+        str.pop_back();
+    }
+    return str;
 }
 
 async::Awaitable<void> handle(TcpConnection&& conn)
@@ -31,7 +33,7 @@ async::Awaitable<void> handle(TcpConnection&& conn)
     std::ignore = conn.address(true);
 
     while (true) {
-        if (auto n = co_await conn.send("> Enter a number: "); !n.has_value()) {
+        if (auto n = co_await conn.send("> Pick a name: "); !n.has_value()) {
             spdlog::error("[{}] Failed to send message: {}", conn.lastAddress(), n.error().message());
             spdlog::info("[{}] Connection closed", conn.lastAddress());
             break;
@@ -40,46 +42,41 @@ async::Awaitable<void> handle(TcpConnection&& conn)
             break;
         }
 
-        auto message = co_await conn.receive(1024);
+        auto message = co_await conn.receive(MAX_MESSAGE_SIZE);
         if (!message.has_value()) {
             spdlog::error("[{}] Failed to receive message: {}", conn.lastAddress(), message.error().message());
             break;
+        } else {
+            removeNewLine(*message);
+            spdlog::debug("[{}] Name: {:?}", conn.lastAddress(), *message);
         }
 
-        auto number = toLong(*message);
-        if (!number.has_value()) {
-            co_await conn.send("Invalid value!\n");
+        auto allAlphaNum = std::ranges::all_of(*message, [](char c) { return std::isalnum(c); });
+        if (!allAlphaNum) {
+            if (auto n = co_await conn.send("Invalid name. Only alphanumeric characters are allowed.\n");
+                !n.has_value()) {
+                break;
+            }
             continue;
+        } else {
+            conn.setName(std::move(*message));
+            co_await conn.send(fmt::format("Welcome, {}!\n", conn.getName()));
+            co_await conn.broadcast(fmt::format("[<Server>]: {} joined the chat!\n", conn.getName()));
         }
 
         async::SteadyTimer timer{ co_await async::this_coro::executor };
 
-        auto now   = std::chrono::steady_clock::now();
-        auto delta = std::chrono::milliseconds{ 0 };
-
-        for (; number > 0; --number.value()) {
-            using namespace std::chrono_literals;
-            using namespace async::operators;
-
-            auto newNow = std::chrono::steady_clock::now();
-            delta       = std::chrono::duration_cast<std::chrono::milliseconds>(newNow - now);
-            now         = newNow;
-
-            timer.expires_after(100ms);
-
-            auto [e1, e2] = co_await (
-                conn.send(fmt::format("Here is your number: {} ({}ms)\n", *number, delta.count()))    //
-                && timer.async_wait()
-            );
-
-            if (!e1.has_value()) {
-                spdlog::error("[{}] Failed to send message: {}", conn.lastAddress(), e1.error().message());
-                break;
-            } else if (!e2.has_value()) {
-                spdlog::error("[{}] Failed to wait for timer: {}", conn.lastAddress(), e2.error().message());
+        while (true) {
+            auto message = co_await conn.receive(MAX_MESSAGE_SIZE);
+            if (!message.has_value()) {
+                spdlog::error("[{}] Failed to receive message: {}", conn.lastAddress(), message.error().message());
                 break;
             }
+
+            co_await conn.broadcast(fmt::format("[{}]: {}\n", conn.getName(), removeNewLine(*message)));
         }
+
+        co_await conn.broadcast(fmt::format("[Server]: {} left the chat!\n", conn.getName()));
     }
 };
 

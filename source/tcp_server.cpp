@@ -53,6 +53,16 @@ async::Awaitable<async::Expect<std::string>> TcpConnection::receive(std::size_t 
     co_return res.transform([&](auto n) { return buffer.substr(0, n); });
 }
 
+async::Awaitable<void> TcpConnection::broadcast(const std::string& message)
+{
+    for (auto& [id, sock] : m_server->getConnections()) {
+        if (id != m_id) {
+            // ignore errors, since it's just a broadcast
+            std::ignore = co_await sock.async_send(asio::buffer(message));
+        }
+    }
+}
+
 std::string TcpConnection::address(bool invalidateCache)
 {
     if (!m_cachedAddr.empty() && !invalidateCache) {
