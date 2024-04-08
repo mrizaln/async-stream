@@ -8,6 +8,7 @@ class Recipe(ConanFile):
         self.folders.generators = "conan"
 
     def requirements(self):
-        self.requires("fmt/10.1.1")
+        self.requires("fmt/10.2.1")
+        self.requires("spdlog/1.13.0")
         self.requires("asio/1.29.0")
         self.requires("tl-expected/1.1.0")

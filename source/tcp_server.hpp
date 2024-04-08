@@ -5,81 +5,67 @@
 #include <fmt/core.h>
 #include <tl/expected.hpp>
 
-#include <optional>
 #include <string>
+#include <unordered_map>
 
+class TcpServer;
+
+// proxy class for the connection
 class TcpConnection
 {
 public:
-    TcpConnection(async::TcpSocket&& socket)
-        : m_socket{ std::move(socket) }
-    {
-    }
-    TcpConnection() = default;
+    using Id = std::size_t;
 
-    async::Awaitable<async::Expect<std::size_t>> send(const std::string& message)
-    {
-        assert(m_socket.has_value() && "TcpConnection should be valid!");
-        return m_socket->async_send(asio::buffer(message));
-    }
+    TcpConnection(TcpServer* server);
+    ~TcpConnection();
 
-    async::Awaitable<async::Expect<std::string>> receive(std::size_t size)
-    {
-        assert(m_socket.has_value() && "TcpConnection should be valid!");
-        std::string buffer(size, '\0');
-        auto        res = co_await m_socket->async_read_some(asio::buffer(buffer));
-        co_return res.transform([&](auto n) { return buffer.substr(0, n); });
-    }
+    TcpConnection(TcpConnection&& other) noexcept;
+    TcpConnection& operator=(TcpConnection&& other) noexcept;
 
-    std::string address() const
-    {
-        assert(m_socket.has_value() && "TcpConnection should be valid!");
-        return m_socket->remote_endpoint().address().to_string();
-    }
+    TcpConnection(const TcpConnection&)            = delete;
+    TcpConnection& operator=(const TcpConnection&) = delete;
 
-    void cancel() { m_socket->cancel(); }
-    void close() { m_socket->close(); }
+    async::Awaitable<async::Expect<std::size_t>> send(const std::string& message);
+    async::Awaitable<async::Expect<std::string>> receive(std::size_t size);
+
+    std::string address(bool invalidateCache);
+    std::string lastAddress() const;
+
+    Id getId() const { return m_id; }
 
 private:
-    std::optional<async::TcpSocket> m_socket;    // optional to be able to default-construct TcpConnection
+    inline static Id s_idCounter = 0;
+
+    Id          m_id;
+    std::string m_cachedAddr;
+    TcpServer*  m_server;
 };
 
 class TcpServer
 {
 public:
-    TcpServer(async::IoContext& context, unsigned short port)
-        : m_context{ context }
-        , m_acceptor{ m_context, { async::tcp::v4(), port } }
-        , m_port{ port }
-    {
-        m_acceptor.set_option(async::tcp::acceptor::reuse_address(true));
-        m_acceptor.listen();
-    }
+    TcpServer(async::IoContext& context, unsigned short port);
+    ~TcpServer();
 
-    ~TcpServer()
-    {
-        if (m_acceptor.is_open()) {
-            stop();
-        }
-    }
+    TcpServer()                            = delete;
+    TcpServer(TcpServer&&)                 = delete;
+    TcpServer& operator=(TcpServer&&)      = delete;
+    TcpServer(const TcpServer&)            = delete;
+    TcpServer& operator=(const TcpServer&) = delete;
 
-    async::Awaitable<async::Expect<TcpConnection>> listen()
-    {
-        auto result = co_await m_acceptor.async_accept();
-        co_return result.transform([](auto&& sock) { return TcpConnection{ std::move(sock) }; });
-    }
+    async::Awaitable<async::Expect<TcpConnection>> listen();
 
-    void stop()
-    {
-        m_acceptor.cancel();
-        m_acceptor.close();
-    }
+    void              stop();
+    async::TcpSocket* getConnection(TcpConnection::Id id);
+    bool              removeConnection(TcpConnection::Id id);
 
     unsigned short getPort() { return m_port; }
 
 private:
     async::IoContext&  m_context;
     async::TcpAcceptor m_acceptor;
+
+    std::unordered_map<TcpConnection::Id, async::TcpSocket> m_connections;
 
     const unsigned short m_port;
 };
